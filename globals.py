@@ -5,6 +5,9 @@ def init():
     global OWNER_ID
     OWNER_ID = 196141424318611457
 
+    global GAME_CHANNEL
+    GAME_CHANNEL = None
+
     global COLOR_SUCCESS
     COLOR_SUCCESS = 0x28a745
 

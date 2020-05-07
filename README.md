@@ -1,9 +1,5 @@
-# game-bot
-**v0.0.0**</br>
-hello-bot walked so game-bot could run
-
-## version history
-**0.0.0** - started development
+# merlin
+hello-bot walked so merlin could run
 
 #### author
 Jon Huber</br>

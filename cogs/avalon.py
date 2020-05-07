@@ -1,209 +1,292 @@
-from enum import Enum
 import random
 import time
 import discord
 from discord.ext import commands
-
-
-class Characters(Enum):
-    MERLIN = 1
-    ASSASSIN = 2
-    GOOD_SERVANT = 3
-    EVIL_SERVANT = 4
-
-
-class Board:
-    def __init__(self, number_of_players):
-        self.number_of_players = number_of_players
-        self.leader = random.randint(0, number_of_players - 1)
-        self.successes = 0
-        self.fails = 0
-        self.failed_votes = 0
-
-        if number_of_players == 5:
-            self.number_on_quest = [2, 3, 2, 3, 3]
-            self.fails_needed = [1, 1, 1, 1, 1]
-            self.number_of_good = 2
-            self.number_of_evil = 1
-        elif number_of_players == 6:
-            self.number_on_quest = [2, 3, 4, 3, 4]
-            self.fails_needed = [1, 1, 1, 1, 1]
-            self.number_of_good = 3
-            self.number_of_evil = 1
-        elif number_of_players == 7:
-            self.number_on_quest = [2, 3, 3, 4, 4]
-            self.fails_needed = [1, 1, 1, 2, 1]
-            self.number_of_good = 3
-            self.number_of_evil = 2
-        elif number_of_players == 8:
-            self.number_on_quest = [3, 4, 4, 5, 5]
-            self.fails_needed = [1, 1, 1, 2, 1]
-            self.number_of_good = 4
-            self.number_of_evil = 2
-        elif number_of_players == 9:
-            self.number_on_quest = [3, 4, 4, 5, 5]
-            self.fails_needed = [1, 1, 1, 2, 1]
-            self.number_of_good = 5
-            self.number_of_evil = 2
-        elif number_of_players == 10:
-            self.number_on_quest = [3, 4, 4, 5, 5]
-            self.fails_needed = [1, 1, 1, 2, 1]
-            self.number_of_good = 5
-            self.number_of_evil = 3
-
-    def select_next_leader(self):
-        if self.leader == self.number_of_players-1:
-            self.leader = 0
-        else:
-            self.leader += 1
-
-    def succeed_vote(self):
-        self.failed_votes = 0
-
-    def fail_vote(self):
-        self.failed_votes += 1
-
-    def succeed_quest(self):
-        self.successes += 1
-
-    def fail_quest(self):
-        self.fails += 1
-
-    def did_good_win(self):
-        return self.successes >= 3
-
-    def did_evil_win(self):
-        return self.fails >= 3
-
-
-class Player:
-    def __init__(self, member):
-        self.member = member
-        self.character = None
-
-    def set_character(self, character):
-        self.character = character
-
-    def is_merlin(self):
-        return self.character == Characters.MERLIN
-
-    def is_good(self):
-        return self.character == Characters.MERLIN or self.character == Characters.GOOD_SERVANT
-
-    def is_assassin(self):
-        return self.character == Characters.ASSASSIN
-
-    def is_bad(self):
-        return self.character == Characters.ASSASSIN or self.character == Characters.EVIL_SERVANT
+from .game import GameState, Characters, Player, Board
 
 
 class Avalon(commands.Cog):
     # constructor
     def __init__(self, bot):
+        # TODO: move all of this to the board
         self.bot = bot
-        self.game_channel = None
+        self.text_channel = None
         self.voice_channel = None
-        self.in_progress = False
-        self.number_of_players = None
-        self.players = []
+        self.game_state = GameState.NOT_PLAYING
         self.board = None
         self.round = 0
-        self.is_leader_choosing = False
-        self.are_players_voting = False
-        self.is_assassin_choosing = False
+        self.players = []
+        self.quest_players = []
+        self.quest_votes = []
+        self.vote_message = None
 
-    # on reaction add event: handle voting on teams
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, member):
-        pass
+    # function: get player given member id
+    def get_player(self, member):
+        return discord.utils.find(lambda p: p.member.id == member, self.players)
 
-    # on message event: handle leader and assassin choosing
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        # cases to ignore the event
-        if message.author.bot or discord.utils.get(message.mentions, bot=True) is not None:
+    # function: get picture given character or success/fail
+    @staticmethod
+    def get_asset(name):
+        if name == Characters.MERLIN:
+            return discord.File('assets/MERLIN.jpg')
+        elif name == Characters.ASSASSIN:
+            return discord.File('assets/ASSASSIN.jpg')
+        elif name == Characters.GOOD_SERVANT:
+            return discord.File('assets/GOOD_SERVANT.jpg')
+        elif name == Characters.EVIL_SERVANT:
+            return discord.File('assets/EVIL_SERVANT.jpg')
+        elif name == 'SUCCESS':
+            return discord.File('assets/SUCCESS.jpg')
+        elif name == 'FAIL':
+            return discord.File('assets/FAIL.jpg')
+        else:
+            return None
+
+    # function: handle the beginning of a round
+    async def begin_round(self, quest):
+        # update state
+        self.round += quest
+        self.board.select_next_leader()
+        self.game_state = GameState.WAITING_FOR_LEADER
+
+        # clear the channel and send game info
+        messages_to_delete = await self.text_channel.history().flatten()
+        await self.text_channel.delete_messages(messages_to_delete)
+        await self.text_channel.send('**QUEST #' + str(self.round) + '**')
+        await self.text_channel.send('There are currently **' + str(self.board.successes) +
+                                     '** succeeded quests and **' + str(self.board.fails) + '** failed ones')
+        await self.text_channel.send('**' + str(self.board.number_on_quest[self.round-1]) +
+                                     '** people need to go on this quest, the counter is at **' +
+                                     str(self.board.failed_votes) + '**')
+        await self.text_channel.send('Who would you like to go on the quest ' +
+                                     self.players[self.board.leader].member.mention + '?')
+
+    # function: handle the end of a round
+    async def end_round(self, quest):
+        # check for win conditions
+        if self.board.did_evil_win():
+            await self.text_channel.send('The **EVIL** players have won!')
+            await self.end_game()
+            return
+        elif self.board.did_good_win():
+            await self.text_channel.send('The **GOOD** players have successfully passed ' +
+                                         '3 quests! Assassin who would you like to kill?')
+            self.game_state = GameState.WAITING_FOR_ASSASSIN
             return
 
-        # handle leader choosing team
-        if self.is_leader_choosing:
-            # cases to delete the message
-            is_not_leader = message.author.id != self.players[self.board.leader].member.id
-            is_not_correct_amount = len(message.mentions) != self.board.number_on_quest[self.round - 1]
-            is_not_valid_players = False
-            for p in self.players:
-                if p not in m.mentions:
-                    is_not_valid_players = True
-            if is_not_leader or is_not_correct_amount or is_not_valid_players:
-                await message.delete()
-                return
+        # clear out variables
+        self.quest_players = []
+        self.quest_votes = []
+        self.vote_message = None
+        await self.begin_round(quest)
 
-            # continue the game
-            self.is_leader_choosing = False
+    # function: handle the end of a game
+    async def end_game(self):
+        # reset all variables
+        self.text_channel = None
+        self.voice_channel = None
+        self.game_state = GameState.NOT_PLAYING
+        self.board = None
+        self.round = 0
+        self.players = []
+        self.quest_players = []
+        self.quest_votes = []
+        self.vote_message = None
 
-        # handle assassin killing someone
-        if self.is_assassin_choosing:
-            # cases to delete the message
-            is_not_assassin = False
-            is_not_correct_amount = len(message.mentions) != 1
-            is_not_valid_players = False
-            for p in self.players:
-                if p not in m.mentions:
-                    is_not_valid_players = True
-            if is_not_assassin or is_not_correct_amount or is_not_valid_players:
-                await message.delete()
-                return
+    # on message event: delete extra messages during the game
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if self.text_channel is None:
+            return
+        if (message.channel.id == self.text_channel.id and
+                self.game_state.value and
+                not message.author.bot and
+                'choose' not in message.content):
+            await message.delete()
 
-            # continue the game
-            self.is_assassin_choosing = False
+    # on reaction add event: handle voting
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction, user):
+        # ignore all bot reactions
+        if user.bot:
+            return
 
-    # avalon command group
-    @commands.group()
-    async def avalon(self, ctx):
-        pass
+        if self.game_state == GameState.WAITING_FOR_VOTE:
+            # get emojis to reference
+            approve_emoji = discord.utils.get(reaction.message.guild.emojis, name='approve')
+            reject_emoji = discord.utils.get(reaction.message.guild.emojis, name='reject')
+
+            # cases to accept the reaction
+            is_correct_emoji = reaction.emoji == approve_emoji or reaction.emoji == reject_emoji
+            is_correct_message = reaction.message.id == self.vote_message
+            # TODO: figure out to make sure only 1 react is possible
+
+            # process the reaction if its appropriate or remove it otherwise
+            if is_correct_emoji and is_correct_message:
+                # get reactions
+                approve_reaction = discord.utils.get(reaction.message.reactions, emoji=approve_emoji)
+                reject_reaction = discord.utils.get(reaction.message.reactions, emoji=reject_emoji)
+
+                if approve_reaction.count + reject_reaction.count - 2 == len(self.players):
+                    if approve_reaction.count > reject_reaction.count:
+                        # team is approved, move to quest
+                        self.board.succeed_vote()
+                        await self.text_channel.send('The vote has **succeeded**, waiting on the quest...')
+                        for p in self.quest_players:
+                            if p.bot:
+                                pass
+                            elif self.get_player(p.id).is_good():
+                                # send the good message
+                                message = await p.send('You have been sent on the quest, ' +
+                                                       'you must vote to pass since you are good')
+                                await message.add_reaction('✅')
+                            elif self.get_player(p.id).is_bad():
+                                # send the bad message
+                                message = await p.send('You have been sent on the quest, ' +
+                                                       'you can either vote to pass or fail since you are bad')
+                                await message.add_reaction('✅')
+                                await message.add_reaction('❎')
+                        self.game_state = GameState.WAITING_FOR_QUEST
+                    else:
+                        # team is rejected
+                        self.board.fail_vote()
+                        await self.text_channel.send('The vote has **failed**, the counter is at **' +
+                                                     str(self.board.failed_votes) + '**')
+
+                        # evil wins if 5 failed votes in a row
+                        if self.board.failed_votes == 5:
+                            await self.text_channel.send('The **EVIL** players have won!')
+                            await self.end_game()
+                            return
+
+                        # finish the round
+                        time.sleep(5)
+                        await self.end_round(0)
+            else:
+                await reaction.remove(user)
+        elif self.game_state == GameState.WAITING_FOR_QUEST:
+            # cases to accept the reaction
+            is_a_dm = reaction.message.guild is None
+            is_on_quest = user in self.quest_players
+            if self.get_player(user.id).is_good():
+                is_correct_emoji = reaction.emoji == '✅'
+            else:
+                is_correct_emoji = reaction.emoji == '✅' or reaction.emoji == '❎'
+            # TODO: figure out to make sure only 1 react is possible
+
+            # process the reaction if its appropriate or remove it otherwise
+            if is_a_dm and is_on_quest and is_correct_emoji:
+                await user.send('Your vote has been processed, waiting for others to vote...')
+
+                # add reaction to list
+                if reaction.emoji == '✅':
+                    self.quest_votes.append(1)
+                elif reaction.emoji == '❎':
+                    self.quest_votes.append(0)
+
+                if len(self.quest_votes) == len(self.quest_players):
+                    if self.quest_votes.count(0) >= self.board.fails_needed[self.round-1]:
+                        # quest has failed
+                        await self.text_channel.send(file=self.get_asset('FAIL'))
+                        self.board.fail_quest()
+                        pass
+                    else:
+                        # quest has succeeded
+                        await self.text_channel.send(file=self.get_asset('SUCCESS'))
+                        self.board.succeed_quest()
+                        pass
+
+                    # finish the round
+                    time.sleep(5)
+                    await self.end_round(1)
+            else:
+                await reaction.remove(user)
+
+    # command: choose people
+    @commands.command()
+    async def choose(self, ctx):
+        if self.game_state == GameState.WAITING_FOR_LEADER:
+            # cases to accept the command
+            is_leader = ctx.author.id == self.players[self.board.leader].member.id
+            is_correct_amount = len(ctx.message.mentions)-1 == self.board.number_on_quest[self.round-1]
+            # TODO: figure out how to validate that mentions are playing the game
+
+            # process the command if it is valid, delete it otherwise
+            if is_leader and is_correct_amount:
+                # get the players chosen for the quest
+                quest_players = ctx.message.mentions
+                for p in quest_players:
+                    if p.bot:
+                        quest_players.remove(p)
+                self.quest_players = quest_players
+
+                # wait for players to vote
+                vote_message = await self.text_channel.send('Please vote approve or reject')
+                await vote_message.add_reaction(discord.utils.get(ctx.guild.emojis, name='approve'))
+                await vote_message.add_reaction(discord.utils.get(ctx.guild.emojis, name='reject'))
+                self.vote_message = vote_message.id
+                self.game_state = GameState.WAITING_FOR_VOTE
+            else:
+                await ctx.message.delete()
+        elif self.game_state == GameState.WAITING_FOR_ASSASSIN:
+            # cases to accept the command
+            is_assassin = self.get_player(ctx.author.id).is_assassin()
+            is_correct_amount = len(ctx.message.mentions)-1 == 1
+            # TODO: figure out how to validate that mention is playing the game
+
+            # process the command if it is valid, delete it otherwise
+            if is_assassin and is_correct_amount:
+                # check if the assassin killed merlin
+                killed_player = None
+                for m in ctx.message.mentions:
+                    if m.bot:
+                        pass
+                    killed_player = self.get_player(m.id)
+                if killed_player.is_merlin():
+                    await self.text_channel.send('The **EVIL** players have won!')
+                    await self.end_game()
+                else:
+                    await self.text_channel.send('The **GOOD** players have won!')
+                    await self.end_game()
+            else:
+                await ctx.message.delete()
+        else:
+            await ctx.message.delete()
 
     # command: start a game of avalon
-    @avalon.command()
+    @commands.command()
     async def start(self, ctx):
+        # reset all variables
+        await self.end_game()
+
         # clear the channel
         messages = await ctx.channel.history().flatten()
         await ctx.channel.delete_messages(messages)
 
-        # unwrap context
-        message = ctx.message
-        self.game_channel = ctx.channel
-        author = ctx.author
-        guild = ctx.guild
-        for vc in guild.voice_channels:
-            if author in vc.members:
+        # grab the channels and players
+        self.text_channel = ctx.channel
+        for vc in ctx.guild.voice_channels:
+            if ctx.author in vc.members:
                 self.voice_channel = vc
                 break
         if self.voice_channel is None:
             return
-        # TODO: REMOVE THIS
-        # members = self.voice_channel.members
-        # self.number_of_players = len(members)
-        members = [author, author, author, author, author, author, author]
-        self.number_of_players = len(members)
+        members = self.voice_channel.members
 
-        # TODO: UNCOMMENT THIS
         # cases to ignore the command
-        # if self.in_progress or self.number_of_players < 5 or self.number_of_players > 10:
-        #     return
+        if self.game_state.value or len(members) < 5 or len(members) > 10:
+            return
 
-        # create the board
-        self.in_progress = True
-        self.board = Board(self.number_of_players)
-
-        # assign characters to players
-        self.players = []
+        # create the board and assign characters
+        self.board = Board(len(members))
         for m in members:
             self.players.append(Player(m))
         random.shuffle(self.players)
         self.players[0].set_character(Characters.MERLIN)
         self.players[1].set_character(Characters.ASSASSIN)
         bad_players_string = '**' + self.players[1].member.name + '**, '
-        for i in range(2, self.number_of_players):
-            if i == self.number_of_players - 1:
+        for i in range(2, len(self.players)):
+            if i == len(self.players)-1:
                 self.players[i].set_character(Characters.EVIL_SERVANT)
                 bad_players_string += 'and **' + self.players[1].member.name + '**'
             elif i >= 2 + self.board.number_of_good:
@@ -213,7 +296,7 @@ class Avalon(commands.Cog):
                 self.players[i].set_character(Characters.GOOD_SERVANT)
 
         # message each player
-        await self.game_channel.send('Assigning characters now...')
+        await self.text_channel.send('Game beginning...')
         for p in self.players:
             await p.member.send('------------------------------------------------------------------------------\n' +
                                 'You are playing: **AVALON**\n\n' +
@@ -240,91 +323,11 @@ class Avalon(commands.Cog):
                                 'number of fails needed is met. After each round, the leader rotates to the ' +
                                 'next player and it begins again\n' +
                                 '------------------------------------------------------------------------------')
-            await p.member.send('You are playing as **' + p.character.name + '** this round')
+            await p.member.send(file=self.get_asset(p.character))
             if p.is_merlin():
                 await p.member.send('The evil players this round are ' + bad_players_string)
             elif p.is_bad():
                 await p.member.send('Your teammates this round are ' + bad_players_string)
 
-            # TODO: REMOVE THIS
-            break
-
-        await self.round_handler(ctx)
-
-    # function: handles the overall game flow
-    async def round_handler(self, ctx):
-        while not self.board.did_good_win() and not self.board.did_evil_win():
-            # start the round
-            self.round += 1
-            messages = await ctx.channel.history().flatten()
-            await ctx.channel.delete_messages(messages)
-
-            # send the game state
-            await self.game_channel.send('Beginning round ' + str(self.round) + '...')
-            await self.game_channel.send('There are currently **' + str(self.board.successes) +
-                                         '** succeeded quests and **' + str(self.board.fails) + '** failed ones')
-
-            # wait for the leader to choose his team
-            await self.game_channel.send('Who would you like to go on the quest ' +
-                                         self.players[self.board.leader].member.mention + '?')
-            self.is_leader_choosing = True
-            print('looping with ' + str(self.is_leader_choosing))
-            while self.is_leader_choosing:
-                pass
-
-            # get the players chosen for the team
-            messages = await self.game_channel.history().flatten()
-            team_message = discord.utils.get(messages, id=self.game_channel.last_message_id)
-            team_players = team_message.mentions
-
-            # wait for all players to vote
-            vote_message = await self.game_channel.send('Please vote approve or reject')
-            await vote_message.add_reaction('\U0001F642')
-            await vote_message.add_reaction('\U0001F643')
-            self.are_players_voting = True
-            while self.are_players_voting:
-                pass
-
-            # TODO: IMPLEMENT WAITING FOR VOTES WITH CORRECT REACTIONS
-
-            # check if the team is approved
-            approve_reaction = discord.utils.get(vote_message.reactions, name='\U0001F642')
-            reject_reaction = discord.utils.get(vote_message.reactions, name='\U0001F643')
-            if approve_reaction.count > reject_reaction.count:
-                # team is approved, move to quest
-                self.board.succeed_vote()
-                await self.quest(team_players)
-            else:
-                # team is rejected
-                self.board.fail_vote()
-                self.board.select_next_leader()
-
-                # evil wins if 5 failed votes in a row
-                if self.board.failed_votes == 5:
-                    while self.board.fails < 3:
-                        self.board.fail_quest()
-
-        # handle end game scenarios
-        if self.board.did_evil_win():
-            await self.game_channel.send('The **EVIL** players have won!')
-        elif self.board.did_good_win():
-            await self.game_channel.send('The **GOOD** players have successfully passed ' +
-                                         '3 quests! Assassin who would you like to kill?')
-
-            # wait for the assassin to kill someone
-            self.is_assassin_choosing = True
-            while self.is_assassin_choosing:
-                pass
-
-            # check if the assassin killed merlin
-            messages = await self.game_channel.history().flatten()
-            kill_message = discord.utils.get(messages, id=self.game_channel.last_message_id)
-            killed_player = discord.utils.find(lambda p: p.member.id == kill_message.mentions[0], self.players)
-            if killed_player.is_merlin():
-                await self.game_channel.send('The **EVIL** players have won!')
-            else:
-                await self.game_channel.send('The **GOOD** players have won!')
-
-    # function: handles the quest
-    async def quest(self, players):
-        pass
+        # start the game
+        await self.begin_round(1)
